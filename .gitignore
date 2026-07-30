@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+*.egg-info/
+
+# data (too large for git, download via scripts instead)
+data/raw/*/
+data/processed/*/
+!data/raw/*/.gitkeep
+!data/processed/*/.gitkeep
+
+# checkpoints and logs (large/binary)
+checkpoints/*/
+!checkpoints/*/.gitkeep
+results/logs/*
+!results/logs/.gitkeep
+
+.DS_Store
