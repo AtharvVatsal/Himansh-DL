@@ -1,0 +1,54 @@
+(venv) chandanmunjal@Chandans-MacBook-Air dual-attention-bigru-har % python -m src.train --model bigru_baseline              --dataset ucihar --split_mode official --seeds 0 1 2
+device: cpu
+efficiency profile (bigru_baseline on ucihar): {'params': 119430, 'flops': 26641920.0, 'latency_ms_bs1': 8.097350000025472, 'latency_ms_bs32': 25.763377500043134}
+[bigru_baseline/ucihar/official] seed=0
+    early stop at epoch 47 (best val_loss=0.0337)
+    -> {'accuracy': 0.9256871394638616, 'macro_f1': 0.9240710357453029}
+[bigru_baseline/ucihar/official] seed=1
+    early stop at epoch 45 (best val_loss=0.0506)
+    -> {'accuracy': 0.9270444519850696, 'macro_f1': 0.9268590729834333}
+[bigru_baseline/ucihar/official] seed=2
+    early stop at epoch 44 (best val_loss=0.0606)
+    -> {'accuracy': 0.9239904988123515, 'macro_f1': 0.9230206224539647}
+(venv) chandanmunjal@Chandans-MacBook-Air dual-attention-bigru-har % python -m src.train --model bigru_baseline              --dataset ucihar --split_mode loso      --seeds 0 1 2
+device: cpu
+efficiency profile (bigru_baseline on ucihar): {'params': 119430, 'flops': 26641920.0, 'latency_ms_bs1': 11.382434999977704, 'latency_ms_bs32': 28.171124159998726}
+[bigru_baseline/ucihar/loso] fold=0 held_out=[28, 16, 24, 18, 9] seed=0
+    -> {'accuracy': 0.9129702414373947, 'macro_f1': 0.9135864638978979}
+[bigru_baseline/ucihar/loso] fold=0 held_out=[28, 16, 24, 18, 9] seed=1
+    -> {'accuracy': 0.8905109489051095, 'macro_f1': 0.8933031494708267}
+[bigru_baseline/ucihar/loso] fold=0 held_out=[28, 16, 24, 18, 9] seed=2
+    -> {'accuracy': 0.8905109489051095, 'macro_f1': 0.8933470666012634}
+[bigru_baseline/ucihar/loso] fold=1 held_out=[10, 29, 25, 13, 1] seed=0
+    early stop at epoch 49 (best val_loss=0.0201)
+    -> {'accuracy': 0.9244625217896572, 'macro_f1': 0.9224761744804396}
+[bigru_baseline/ucihar/loso] fold=1 held_out=[10, 29, 25, 13, 1] seed=1
+    -> {'accuracy': 0.9192330040674027, 'macro_f1': 0.9165565249123612}
+[bigru_baseline/ucihar/loso] fold=1 held_out=[10, 29, 25, 13, 1] seed=2
+    -> {'accuracy': 0.9331783846600813, 'macro_f1': 0.9314569569704187}
+[bigru_baseline/ucihar/loso] fold=2 held_out=[5, 17, 6, 14, 12] seed=0
+    -> {'accuracy': 0.8925518925518926, 'macro_f1': 0.8917181352160255}
+[bigru_baseline/ucihar/loso] fold=2 held_out=[5, 17, 6, 14, 12] seed=1
+    -> {'accuracy': 0.9096459096459096, 'macro_f1': 0.9092016514675291}
+[bigru_baseline/ucihar/loso] fold=2 held_out=[5, 17, 6, 14, 12] seed=2
+    -> {'accuracy': 0.8803418803418803, 'macro_f1': 0.878222776450559}
+[bigru_baseline/ucihar/loso] fold=3 held_out=[23, 2, 3, 26, 4] seed=0
+    -> {'accuracy': 0.9646171693735499, 'macro_f1': 0.964183247749424}
+[bigru_baseline/ucihar/loso] fold=3 held_out=[23, 2, 3, 26, 4] seed=1
+    -> {'accuracy': 0.9692575406032483, 'macro_f1': 0.9692998967222645}
+[bigru_baseline/ucihar/loso] fold=3 held_out=[23, 2, 3, 26, 4] seed=2
+    -> {'accuracy': 0.9756380510440835, 'macro_f1': 0.9761262927885522}
+[bigru_baseline/ucihar/loso] fold=4 held_out=[22, 27, 19, 30, 21] seed=0
+    -> {'accuracy': 0.9691558441558441, 'macro_f1': 0.9729154830288705}
+[bigru_baseline/ucihar/loso] fold=4 held_out=[22, 27, 19, 30, 21] seed=1
+    early stop at epoch 49 (best val_loss=0.0388)
+    -> {'accuracy': 0.9783549783549783, 'macro_f1': 0.9810776317777706}
+[bigru_baseline/ucihar/loso] fold=4 held_out=[22, 27, 19, 30, 21] seed=2
+    early stop at epoch 47 (best val_loss=0.0362)
+    -> {'accuracy': 0.9756493506493507, 'macro_f1': 0.9783326997545739}
+[bigru_baseline/ucihar/loso] fold=5 held_out=[8, 11, 15, 20, 7] seed=0
+    -> {'accuracy': 0.9703843730308759, 'macro_f1': 0.970975242685998}
+[bigru_baseline/ucihar/loso] fold=5 held_out=[8, 11, 15, 20, 7] seed=1
+    -> {'accuracy': 0.962822936357908, 'macro_f1': 0.9639612696519007}
+[bigru_baseline/ucihar/loso] fold=5 held_out=[8, 11, 15, 20, 7] seed=2
+    -> {'accuracy': 0.9691241335853812, 'macro_f1': 0.969640455007605}

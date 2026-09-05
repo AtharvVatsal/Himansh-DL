@@ -1,20 +1,29 @@
 __pycache__/
 *.pyc
+*.pyo
 .ipynb_checkpoints/
 .venv/
 venv/
 *.egg-info/
+.pytest_cache/
 
-# data (too large for git, download via scripts instead)
+# raw and processed data (large, regenerate via data/download_data.py +
+# src/preprocessing.py rather than committing binary data to git)
 data/raw/*/
 data/processed/*/
 !data/raw/*/.gitkeep
 !data/processed/*/.gitkeep
 
-# checkpoints and logs (large/binary)
+# model checkpoints (large binaries)
 checkpoints/*/
 !checkpoints/*/.gitkeep
+
+# logs (regenerable)
 results/logs/*
 !results/logs/.gitkeep
 
+# OS / editor junk
 .DS_Store
+Thumbs.db
+.idea/
+.vscode/

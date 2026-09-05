@@ -22,6 +22,37 @@ Recent HAR literature (Dual-INABA, TGA-HAR, MHAT-Net, CNN-BiGRU-Transformer) rep
 1. **Efficiency accounting** — Dual-Attention BiGRU vs. a CNN+BiGRU reference baseline and other baselines, compared on accuracy, params, FLOPs, and inference latency, all reimplemented under identical conditions (not copied from literature tables).
 2. **Evaluation rigor** — Subject-independent (LOSO) cross-validation, ≥3 seeds per fold, mean±std reporting, and paired statistical significance testing (Wilcoxon signed-rank) — instead of a single random-split accuracy number.
 
+## 2.1 Architectural novelty layered on top of the methodological gap
+
+Section 2's conclusion repositioned novelty from architecture to methodology
+because plain "channel + temporal dual attention + BiGRU" is a closed gap
+(Dual-INABA, Dec 2025). To avoid the proposed model being a pure
+reimplementation of already-published architecture, `dual_attention_bigru.py`
+adds one new, well-defined mechanism on top of that closed design:
+
+**Spectral-Gated Channel Attention.** Every dual-attention HAR paper found in
+the review (Dual-INABA, TGA-HAR, MHAT-Net, CNN-BiGRU-Transformer,
+AttnFusionGRU) computes channel attention purely from learned time-domain
+statistics of the window. None inject a frequency-domain prior. This project's
+`SpectralChannelGate` (`src/attention_modules.py`) computes, per sensor
+channel and per window, (a) the fraction of spectral power inside the human
+gait/limb-swing band (0.3-3.5 Hz, via a single `torch.fft.rfft` — no CNN, no
+extra learned transform) and (b) normalized spectral entropy, then maps that
+2-value descriptor through a tiny MLP to a per-channel gate that multiplies
+the learned channel-attention weights. This lets the model up-weight channels
+carrying real periodic locomotion signal and down-weight near-DC/static
+channels — a distinction a purely time-domain learned attention has no direct
+way to make from a single window.
+
+This is implemented as an ablatable, switchable component
+(`use_spectral_gate` in `DualAttentionBiGRU`, exposed via
+`--dual_attn_variant` in `train.py`: `full` = proposed model, `plain` =
+learned-channel-attention-only ablation arm equivalent to the closed
+Dual-INABA-style baseline, `channel_only` / `temporal_only` isolate each
+attention axis). The `full` vs. `plain` delta is this project's headline
+architectural result, reported alongside the efficiency-and-rigor pillars
+below.
+
 ## 3. Data harmonization decision (decided Week 1, not deferred to Week 3)
 
 **Core evaluation (native mode) does not require cross-dataset harmonization.** The 4×3 comparison table and LOSO results are computed per-dataset, using each dataset's own optimal sampling rate, window size, and channel set. This is the submission-critical path and carries no harmonization risk.
