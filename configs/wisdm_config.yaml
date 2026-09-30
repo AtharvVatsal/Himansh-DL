@@ -1,0 +1,45 @@
+# configs/wisdm_config.yaml
+#
+# Loaded by `python -m src.train --config configs/wisdm_config.yaml ...` (and by
+# src/profile_efficiency.py so profiled models match trained ones). Values
+# here become argparse defaults; any CLI flag overrides them. The dataset
+# block is documentation of src/preprocessing.py NATIVE_CONFIGS -- changing
+# it here does not re-window the data.
+
+dataset:
+  name: wisdm
+  # WISDM v1.1 raw accelerometer stream, windowed by preprocessing.py
+  sampling_rate_hz: 20
+  window_samples: 51         # ~2.56s @ 20Hz
+  step_samples: 25           # ~50% overlap
+  input_channels: 3          # acc_x/y/z
+  num_classes: 6             # walking, jogging, upstairs, downstairs, sitting, standing
+  num_subjects: 36
+  has_official_split: false  # "official" = fixed seeded subject-level 80/20 split (documented substitute)
+
+evaluation:
+  loso_n_folds: 6            # data_loader.py LOSO_N_FOLDS["wisdm"]; ~6 subjects held out/fold
+  seeds: [0, 1, 2]           # minimum 3 seeds per plan's evaluation protocol
+  val_fraction: 0.1          # share of each fold's TRAIN subjects held out for early stopping
+
+training:
+  epochs: 50
+  batch_size: 64
+  lr: 0.001
+  patience: 8                # early stopping on the subject-wise validation set
+  grad_clip: 1.0             # max grad-norm (RNN stability); 0 disables
+  lr_scheduler: plateau      # ReduceLROnPlateau(factor=0.5, patience=3) on val loss
+
+model_defaults:
+  # shared architecture knobs; each model only receives the ones it accepts
+  hidden_size: 64
+  num_layers: 2
+  dropout: 0.3
+  attention_dim: 64          # bilstm_attention_baseline and dual_attention_bigru
+
+dual_attention_bigru:
+  # proposed model (src/models/dual_attention_bigru.py) -- see
+  # docs/research_gap_notes.md for the spectral-gated novelty writeup.
+  # Variant is chosen on the CLI: --dual_attn_variant full|plain|channel_only|temporal_only|all
+  channel_reduction: 4
+  low_band_hz: [0.3, 3.5]    # human gait/limb-swing band

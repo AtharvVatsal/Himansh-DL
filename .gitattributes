@@ -1,0 +1,7 @@
+# shell scripts must keep LF endings, or bash on Windows (Git Bash) fails with "$'\r': command not found"
+*.sh text eol=lf
+
+*.npy binary
+*.npz binary
+*.pt  binary
+*.png binary

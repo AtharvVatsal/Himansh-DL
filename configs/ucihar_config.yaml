@@ -1,50 +1,45 @@
 # configs/ucihar_config.yaml
 #
-# Reference config for UCI-HAR. train.py currently takes these as CLI args
-# (see src/train.py's parse_args), not a --config flag yet -- this file is
-# the documented source of truth for those values so runs stay consistent
-# across the weeks. If/when train.py grows a --config loader, these keys
-# map 1:1 onto its argparse names.
+# Loaded by `python -m src.train --config configs/ucihar_config.yaml ...` (and by
+# src/profile_efficiency.py so profiled models match trained ones). Values
+# here become argparse defaults; any CLI flag overrides them. The dataset
+# block is documentation of src/preprocessing.py NATIVE_CONFIGS -- changing
+# it here does not re-window the data.
 
 dataset:
   name: ucihar
-  # from preprocessing.py NATIVE_CONFIGS["ucihar"] -- UCI-HAR ships
-  # pre-windowed by the source, we don't re-window it
+  # UCI-HAR ships pre-windowed by the source, we don't re-window it
   sampling_rate_hz: 50
   window_samples: 128        # 2.56s @ 50Hz
   step_samples: 64           # 50% overlap
-  input_channels: 6          # total_acc_x/y/z, body_gyro_x/y/z (see UCIHAR_SIGNALS in preprocessing.py)
+  input_channels: 6          # total_acc_x/y/z, body_gyro_x/y/z (UCIHAR_SIGNALS in preprocessing.py)
   num_classes: 6             # walking, upstairs, downstairs, sitting, standing, laying
   num_subjects: 30
-  has_official_split: true   # real official train/test split (21/9 subjects), not a seeded fallback
+  has_official_split: true   # real official train/test split (21/9 subjects)
 
 evaluation:
-  split_mode: official       # official | loso -- run both across the project, not just one
-  loso_n_folds: 6             # from data_loader.py LOSO_N_FOLDS["ucihar"]; ~5 subjects held out/fold
-  seeds: [0, 1, 2]             # minimum 3 seeds per plan's evaluation protocol
+  loso_n_folds: 6            # data_loader.py LOSO_N_FOLDS["ucihar"]; ~5 subjects held out/fold
+  seeds: [0, 1, 2]           # minimum 3 seeds per plan's evaluation protocol
+  val_fraction: 0.1          # share of each fold's TRAIN subjects held out for early stopping
 
 training:
   epochs: 50
   batch_size: 64
   lr: 0.001
-  patience: 8                 # early-stopping patience, on held-out slice of train (see train.py)
+  patience: 8                # early stopping on the subject-wise validation set
+  grad_clip: 1.0             # max grad-norm (RNN stability); 0 disables
+  lr_scheduler: plateau      # ReduceLROnPlateau(factor=0.5, patience=3) on val loss
 
 model_defaults:
-  # shared architecture knobs; not all models use every key
+  # shared architecture knobs; each model only receives the ones it accepts
   hidden_size: 64
   num_layers: 2
   dropout: 0.3
-  attention_dim: 64           # used by bilstm_attention_baseline and dual_attention_bigru
+  attention_dim: 64          # bilstm_attention_baseline and dual_attention_bigru
 
 dual_attention_bigru:
   # proposed model (src/models/dual_attention_bigru.py) -- see
-  # docs/research_gap_notes.md for the spectral-gated novelty writeup
+  # docs/research_gap_notes.md for the spectral-gated novelty writeup.
+  # Variant is chosen on the CLI: --dual_attn_variant full|plain|channel_only|temporal_only|all
   channel_reduction: 4
-  low_band_hz: [0.3, 3.5]      # human gait/limb-swing band at UCI-HAR's 50Hz
-  dual_attn_variant: full      # full | plain | channel_only | temporal_only (see train.py DUAL_ATTN_VARIANTS)
-
-paths:
-  raw_dir: data/raw/ucihar
-  processed_dir: data/processed/ucihar
-  checkpoint_dir: checkpoints
-  results_csv: results/tables/raw_results.csv
+  low_band_hz: [0.3, 3.5]    # human gait/limb-swing band

@@ -27,3 +27,9 @@ results/logs/*
 Thumbs.db
 .idea/
 .vscode/
+# archived checkpoints (large binaries)
+results/archive/*/checkpoints/
+
+# smoke-test output and CSV lock files
+results/smoke/
+*.lock

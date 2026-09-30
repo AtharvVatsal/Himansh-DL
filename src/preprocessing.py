@@ -20,7 +20,7 @@ your download_data.py produces something different):
        user,activity,timestamp,x,y,z;
        Continuous accelerometer-only stream. We window it ourselves.
 
-  data/raw/pamap2/Protocol/subject10X.dat  (X = 1..9)
+  data/raw/pamap2/Protocol/subject10X.dat  (X = 1..9; 109 excluded, see below)
     -> space-delimited, 54 columns per row:
        col 0: timestamp, col 1: activityID, col 2: heart rate,
        col 3-19: hand IMU (temp, acc16 x/y/z, acc6 x/y/z, gyro x/y/z,
@@ -28,6 +28,9 @@ your download_data.py produces something different):
        col 20-36: chest IMU (same layout),
        col 37-53: ankle IMU (same layout).
        activityID == 0 marks transient/unlabeled rows and is dropped.
+       Native mode: acc16 + gyro from all 3 IMUs (18 channels), anti-alias
+       downsampled 100Hz -> 50Hz, 2.56s windows. Subject 109 is excluded
+       (it has almost no protocol data -- standard practice in PAMAP2 work).
 
 NATIVE MODE (default, used for the core 4x3 comparison table):
   each dataset keeps its own sampling rate / window size / channel set.
@@ -38,6 +41,8 @@ HARMONIZED MODE (optional, cross-dataset transfer experiment only):
   for the full rationale, including the documented (not "fixed") sensor
   placement confound.
 """
+
+import json
 
 import numpy as np
 import pandas as pd
@@ -58,7 +63,19 @@ PROCESSED_DIR = DATA_DIR / "processed"
 NATIVE_CONFIGS = {
     "ucihar": dict(sampling_rate=50, window_samples=128, step_samples=64),  # pre-windowed by source
     "wisdm":  dict(sampling_rate=20, window_samples=51, step_samples=25),   # ~2.56s @ 20Hz, 50% overlap
-    "pamap2": dict(sampling_rate=100, window_samples=256, step_samples=128),  # 2.56s @ 100Hz, 50% overlap
+    # raw 100Hz, anti-alias downsampled to 50Hz: same 2.56s/128-sample window as
+    # UCI-HAR, and halves the BiGRU's sequential steps vs. native 256
+    "pamap2": dict(sampling_rate=50, raw_sampling_rate=100, window_samples=128, step_samples=64),
+}
+
+# Human-readable class names, keyed by the RAW label value stored in y.npy
+# (used by evaluate.py for confusion matrices).
+CLASS_NAMES = {
+    "ucihar": {1: "walking", 2: "upstairs", 3: "downstairs", 4: "sitting", 5: "standing", 6: "laying"},
+    "wisdm": {0: "walking", 1: "jogging", 2: "upstairs", 3: "downstairs", 4: "sitting", 5: "standing"},
+    "pamap2": {1: "lying", 2: "sitting", 3: "standing", 4: "walking", 5: "running", 6: "cycling",
+               7: "nordic_walking", 12: "asc_stairs", 13: "desc_stairs", 16: "vacuuming",
+               17: "ironing", 24: "rope_jumping"},
 }
 
 HARMONIZED_CONFIG = dict(
@@ -124,8 +141,9 @@ def normalize_channels(X_train: np.ndarray, *others: np.ndarray):
     Call this per-split (official split or per LOSO fold) -- never on
     the full dataset before splitting, to avoid test-fold leakage.
     """
-    mean = X_train.mean(axis=(0, 1), keepdims=True)
-    std = X_train.std(axis=(0, 1), keepdims=True) + 1e-8
+    # float64 accumulation: float32 sums over ~1M values drift by ~1e-3
+    mean = X_train.mean(axis=(0, 1), keepdims=True, dtype=np.float64)
+    std = X_train.std(axis=(0, 1), keepdims=True, dtype=np.float64) + 1e-8
     out = [(X_train - mean) / std]
     for arr in others:
         out.append((arr - mean) / std)
@@ -203,7 +221,7 @@ def load_raw_wisdm(raw_path: Path = RAW_DIR / "wisdm" / "WISDM_ar_v1.1_raw.txt",
             )
 
     rows = []
-    with open(raw_path, "r") as f:
+    with open(raw_path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip().rstrip(";")
             if not line:
@@ -218,8 +236,11 @@ def load_raw_wisdm(raw_path: Path = RAW_DIR / "wisdm" / "WISDM_ar_v1.1_raw.txt",
             except (ValueError, KeyError):
                 continue  # bad row (NaN fields, unknown activity), skip
 
+    # Keep the file's recording order. Sorting by (user, activity) would
+    # splice separate recording sessions of the same activity into one
+    # continuous stream and create windows across that discontinuity;
+    # sliding_windows already drops windows that cross a user/activity change.
     df = pd.DataFrame(rows, columns=["user", "activity", "x", "y", "z"])
-    df = df.sort_values(["user", "activity"]).reset_index(drop=True)
 
     signal = df[["x", "y", "z"]].to_numpy()
     labels = df["activity"].to_numpy()
@@ -236,6 +257,24 @@ def load_raw_wisdm(raw_path: Path = RAW_DIR / "wisdm" / "WISDM_ar_v1.1_raw.txt",
 PAMAP2_HAND_ACC_COLS = [4, 5, 6]    # acc16 x,y,z within hand IMU block (0-indexed, see header note)
 PAMAP2_HAND_GYRO_COLS = [10, 11, 12]
 PAMAP2_ACTIVITY_COL = 1
+
+# First column (temperature) of each 17-column IMU block; acc16 x/y/z is at
+# +1..+3 and gyro x/y/z at +7..+9 within a block.
+PAMAP2_IMU_OFFSETS = {"hand": 3, "chest": 20, "ankle": 37}
+PAMAP2_NATIVE_PLACEMENTS = ("hand", "chest", "ankle")
+PAMAP2_EXCLUDE_SUBJECTS = {109}  # ~only rope jumping recorded; excluded as in most PAMAP2 work
+
+
+def pamap2_native_columns(placements=PAMAP2_NATIVE_PLACEMENTS):
+    """Column indices + names for acc16 and gyro of each placement (6 per IMU)."""
+    cols, names = [], []
+    for place in placements:
+        off = PAMAP2_IMU_OFFSETS[place]
+        for kind, start in (("acc", off + 1), ("gyro", off + 7)):
+            for i, axis in enumerate("xyz"):
+                cols.append(start + i)
+                names.append(f"{place}_{kind}_{axis}")
+    return cols, names
 
 
 def _resolve_pamap2_protocol_dir(raw_dir: Path) -> Path:
@@ -256,34 +295,50 @@ def _resolve_pamap2_protocol_dir(raw_dir: Path) -> Path:
     )
 
 
+def _downsample_labels(labels: np.ndarray, n_out: int) -> np.ndarray:
+    """Nearest-index label decimation matching a resampled signal's length."""
+    factor = len(labels) / n_out
+    idx = (np.arange(n_out) * factor).astype(int).clip(max=len(labels) - 1)
+    return labels[idx]
+
+
 def load_raw_pamap2(raw_dir: Path = RAW_DIR / "pamap2" / "Protocol",
                      cfg: dict = NATIVE_CONFIGS["pamap2"]) -> dict:
     """
-    Load all subject .dat files, drop transient rows (activityID==0),
-    forward-fill occasional NaNs (sensor dropout), window per subject.
-    Native mode uses hand+chest+ankle acc+gyro (12 channels); adjust
-    PAMAP2_*_COLS below if you want a different channel subset.
+    Per subject (109 excluded): take acc16 + gyro of hand, chest and ankle
+    IMUs (18 channels), linearly interpolate sensor-dropout NaNs, anti-alias
+    downsample 100Hz -> cfg sampling rate, then window.
+
+    Transient rows (activityID 0) are kept *during* windowing so that any
+    window touching a transition is discarded by sliding_windows' constant-
+    label check; windows labelled 0 are dropped afterwards. (Dropping those
+    rows first would glue the two sides of every transition together.)
     """
     raw_dir = _resolve_pamap2_protocol_dir(raw_dir)
+    cols, _ = pamap2_native_columns()
+    raw_rate, target_rate = cfg["raw_sampling_rate"], cfg["sampling_rate"]
 
     all_X, all_y, all_subj = [], [], []
     for fpath in sorted(raw_dir.glob("subject*.dat")):
         subject_id = int(fpath.stem.replace("subject", ""))
+        if subject_id in PAMAP2_EXCLUDE_SUBJECTS:
+            continue
         data = pd.read_csv(fpath, sep=r"\s+", header=None)
-        data = data[data[PAMAP2_ACTIVITY_COL] != 0]  # drop transient/unlabeled
-        data = data.ffill().bfill()  # handle sensor dropout NaNs
-
-        # Native mode: hand accel + gyro only, for simplicity/consistency
-        # across models. Extend to chest/ankle columns here if desired.
-        signal = data.iloc[:, PAMAP2_HAND_ACC_COLS + PAMAP2_HAND_GYRO_COLS].to_numpy()
+        signal = (data.iloc[:, cols].interpolate(limit_direction="both")
+                  .to_numpy(dtype=np.float64))
         labels = data[PAMAP2_ACTIVITY_COL].to_numpy().astype(int)
+
+        if target_rate != raw_rate:
+            signal = resample_signal(signal, orig_rate=raw_rate, target_rate=target_rate)
+            labels = _downsample_labels(labels, len(signal))
         subjects = np.full(len(labels), subject_id)
 
         X, y, subj = sliding_windows(signal, labels, subjects,
                                       cfg["window_samples"], cfg["step_samples"])
-        all_X.append(X)
-        all_y.append(y)
-        all_subj.append(subj)
+        keep = y != 0
+        all_X.append(X[keep].astype(np.float32))
+        all_y.append(y[keep])
+        all_subj.append(subj[keep])
 
     return dict(
         X=np.concatenate(all_X), y=np.concatenate(all_y),
@@ -321,6 +376,8 @@ def harmonize_pamap2(raw_dir: Path = RAW_DIR / "pamap2" / "Protocol") -> dict:
     all_X, all_y, all_subj = [], [], []
     for fpath in sorted(raw_dir.glob("subject*.dat")):
         subject_id = int(fpath.stem.replace("subject", ""))
+        if subject_id in PAMAP2_EXCLUDE_SUBJECTS:
+            continue
         data = pd.read_csv(fpath, sep=r"\s+", header=None)
         data = data[data[PAMAP2_ACTIVITY_COL] != 0]
         data = data.ffill().bfill()
@@ -331,9 +388,7 @@ def harmonize_pamap2(raw_dir: Path = RAW_DIR / "pamap2" / "Protocol") -> dict:
         acc_ds = resample_signal(acc, orig_rate=100, target_rate=HARMONIZED_CONFIG["sampling_rate"])
         # labels/subjects must be downsampled by the same integer factor for
         # sliding_windows' boundary check to stay meaningful
-        factor = len(labels) / len(acc_ds)
-        idx = (np.arange(len(acc_ds)) * factor).astype(int).clip(max=len(labels) - 1)
-        labels_ds = labels[idx]
+        labels_ds = _downsample_labels(labels, len(acc_ds))
         subj_ds = np.full(len(acc_ds), subject_id)
 
         X, y, subj = sliding_windows(
@@ -350,6 +405,14 @@ def harmonize_pamap2(raw_dir: Path = RAW_DIR / "pamap2" / "Protocol") -> dict:
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
+def channel_names(dataset: str):
+    if dataset == "ucihar":
+        return list(UCIHAR_SIGNALS)
+    if dataset == "wisdm":
+        return ["acc_x", "acc_y", "acc_z"]
+    return pamap2_native_columns()[1]
+
+
 def process_and_save(dataset: str, mode: str = "native"):
     assert dataset in ("ucihar", "wisdm", "pamap2")
     assert mode in ("native", "harmonized")
@@ -373,19 +436,38 @@ def process_and_save(dataset: str, mode: str = "native"):
             )
         suffix = "_harmonized"
 
-    np.save(out_dir / f"X{suffix}.npy", result["X"])
+    np.save(out_dir / f"X{suffix}.npy", result["X"].astype(np.float32))
     np.save(out_dir / f"y{suffix}.npy", result["y"])
     np.save(out_dir / f"subject{suffix}.npy", result["subject"])
     if result.get("official_split") is not None:
         np.save(out_dir / f"official_split{suffix}.npy", result["official_split"])
+
+    if mode == "native":
+        labels, counts = np.unique(result["y"], return_counts=True)
+        meta = dict(
+            dataset=dataset,
+            sampling_rate_hz=NATIVE_CONFIGS[dataset]["sampling_rate"],
+            window_samples=int(result["X"].shape[1]),
+            channels=channel_names(dataset),
+            classes={int(l): CLASS_NAMES[dataset].get(int(l), str(l)) for l in labels},
+            windows_per_class={int(l): int(c) for l, c in zip(labels, counts)},
+            subjects=sorted(int(v) for v in np.unique(result["subject"])),
+            excluded_subjects=sorted(PAMAP2_EXCLUDE_SUBJECTS) if dataset == "pamap2" else [],
+        )
+        (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     print(f"[{dataset}/{mode}] X={result['X'].shape} y={result['y'].shape} "
           f"subjects={len(np.unique(result['subject']))} unique")
 
 
 if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="Window raw datasets into data/processed/<dataset>/")
+    ap.add_argument("--dataset", choices=["ucihar", "wisdm", "pamap2", "all"], default="all")
+    cli = ap.parse_args()
+
     # Native mode is the submission-critical path -- run this first for all 3.
-    for ds in ("ucihar", "wisdm", "pamap2"):
+    for ds in (("ucihar", "wisdm", "pamap2") if cli.dataset == "all" else (cli.dataset,)):
         process_and_save(ds, mode="native")
 
     # Harmonized mode: only needed for the optional Week-10 bonus experiment.
