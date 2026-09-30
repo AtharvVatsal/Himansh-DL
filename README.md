@@ -30,18 +30,70 @@ UCI-HAR, WISDM, PAMAP2 — evaluated independently in native mode (own sampling 
 
 ## Running the full pipeline
 
+### Quick start (fresh machine)
+
+**Prerequisites**
+- Git. On Windows install [Git for Windows](https://git-scm.com/download/win), which includes **Git Bash**.
+- Python **3.10 or newer** from python.org. On Windows, tick *"Add python.exe to PATH"* or keep the `py` launcher.
+  The Microsoft Store `python` stub doesn't count, and the script skips it.
+- NVIDIA GPU (optional): a recent NVIDIA driver. `nvidia-smi` must work in a terminal. You don't need the CUDA toolkit,
+  because the PyTorch wheel bundles its own CUDA runtime.
+- About 1 GB of free disk (datasets are about 320 MB raw and 60 MB processed, plus checkpoints and predictions).
+
+**Run** (macOS/Linux terminal, or **Git Bash** on Windows, not PowerShell or cmd):
+
 ```bash
-bash scripts/run_all.sh                  # venv -> download -> preprocess -> smoke -> train -> profile -> stats -> evaluate
-PARALLEL=1 bash scripts/run_all.sh       # same, training the 3 datasets concurrently
+git clone https://github.com/himanshmunjal/Dual-attention-HAR.git
+cd Dual-attention-HAR
+DEVICE=cuda bash scripts/run_all.sh      # on a machine without an NVIDIA GPU: bash scripts/run_all.sh
 ```
 
-The script creates `.venv` and installs `requirements.txt` on first run (and again whenever it
-changes). On a machine with an NVIDIA GPU it installs the CUDA build of PyTorch and aborts if CUDA
-isn't usable rather than silently training on the CPU. On Windows, run it from **Git Bash**.
+That single command does everything:
+`venv -> download -> preprocess -> smoke -> train -> profile -> stats -> evaluate`.
 
-`scripts/run_all.sh` is safe to re-run: downloads are skipped if present, and every finished
-training run is skipped (resume is keyed on model/variant/dataset/split/fold/seed in
-`results/tables/raw_results.csv`). Run only some steps with e.g. `STEPS="train" DATASETS="pamap2"`.
+- **Environment.** On the first run the script creates `.venv/` and installs `requirements.txt`, and reinstalls
+  only when that file changes. If `nvidia-smi` finds a GPU, it installs the CUDA build of PyTorch first. Don't
+  install anything by hand or activate a venv yourself.
+- **Check the GPU.** Near the top of the output (also in `results/logs/setup.log`) you should see
+  `cuda available: True (NVIDIA GeForce ...)`. If a GPU is present but CUDA isn't usable, the script
+  stops instead of silently training on the CPU.
+- **Scale.** 7 arms (3 baselines + 4 ablation arms of the proposed model) × 3 seeds × (1 official split + LOSO folds:
+  6 UCI-HAR, 6 WISDM, 8 PAMAP2) gives **483 training runs**. Expect several hours even on a GPU. Keep the laptop
+  plugged in and set it to never sleep.
+- **Resume.** If the run is interrupted (crash, reboot, Ctrl-C), run the same command again. Downloads that are
+  already present are skipped, and so is every run already recorded in `results/tables/raw_results.csv`
+  (keyed on model/variant/dataset/split/fold/seed).
+
+**Options** (environment variables, e.g. `PARALLEL=1 DEVICE=cuda bash scripts/run_all.sh`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DEVICE` | `auto` | `cuda`, `cpu`, `mps` or `auto` (CUDA if available, else CPU). Use `cuda` on a GPU machine so a broken install fails loudly |
+| `PARALLEL` | `0` | `1` trains the 3 datasets concurrently on one GPU (faster; logs go to `results/logs/train_<ds>.log`) |
+| `DATASETS` | `ucihar wisdm pamap2` | subset of datasets |
+| `STEPS` | all | subset of `download preprocess smoke train profile stats evaluate` |
+| `TORCH_CUDA` | `cu128` | PyTorch CUDA wheel index. Try `cu126` if the driver is too old for the default |
+| `BASE_PY` | auto | interpreter used to create the venv, e.g. `python3.12` |
+| `VENV` | `.venv` | venv location |
+| `NO_VENV=1` + `PY=...` | off | skip venv management and use that interpreter as-is |
+
+**Troubleshooting**
+- `$'\r': command not found` / `pipefail\r`: the script has Windows line endings. The repo's `.gitattributes`
+  prevents this on a fresh clone. If a copy is already affected, fix it with `sed -i 's/\r$//' scripts/run_all.sh`.
+- `no Python >= 3.10 found`: install Python from python.org, or point to it with `BASE_PY=/path/to/python`.
+- `GPU is present but this PyTorch cannot use it`: update the NVIDIA driver, then
+  `rm .venv/.installed_requirements.txt` and re-run (optionally with `TORCH_CUDA=cu126`).
+- `pip` can't find a torch wheel: your Python is too new for the published CUDA wheels. Use Python 3.12 via `BASE_PY`,
+  and delete `.venv` first.
+
+**Bringing results back.** Everything the paper needs is in `results/` (`tables/`, `preds/`, `figures/`),
+and all of it is tracked by git. Either commit and push from the run machine, or zip the `results/` folder and copy it over.
+`checkpoints/` and `results/logs/` are git-ignored, so copy those by hand if you want them.
+
+### Individual steps
+
+Each step can also be run on its own (inside the venv: `source .venv/bin/activate`, or
+`source .venv/Scripts/activate` in Git Bash on Windows):
 
 | Step | Command | Output |
 |---|---|---|
@@ -67,4 +119,14 @@ Project underway — see week-by-week timeline in the project plan. Repo committ
 
 ## Repository structure
 
-See project plan for the full folder layout (`src/`, `data/`, `configs/`, `results/`, `report/`, `docs/`).
+```
+configs/          per-dataset YAML configs (hyperparameters, seeds, LOSO folds)
+data/             download_data.py; raw/ and processed/ are generated (git-ignored)
+src/              preprocessing, data_loader, train, profile_efficiency, stats_test, evaluate, utils
+src/models/       bigru_baseline, bilstm_attention_baseline, cnn_bigru_reference, dual_attention_bigru
+scripts/          run_all.sh -- the end-to-end pipeline
+notebooks/        exploration only (not used for reported results)
+results/          tables/, preds/, figures/ (generated); archive/ holds superseded runs
+docs/, report/    research-gap notes and literature review
+checkpoints/      model weights (generated, git-ignored)
+```
