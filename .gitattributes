@@ -5,3 +5,6 @@
 *.npz binary
 *.pt  binary
 *.png binary
+
+# Windows batch files need CRLF endings
+*.bat text eol=crlf

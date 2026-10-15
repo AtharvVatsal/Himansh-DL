@@ -1,15 +1,22 @@
 #!/usr/bin/env bash
 # scripts/run_all.sh -- the complete pipeline, end to end.
 #
-#   bash scripts/run_all.sh                 # everything, datasets one after another
-#   PARALLEL=1 bash scripts/run_all.sh      # train the 3 datasets concurrently (1 GPU is enough)
+#   bash scripts/run_all.sh                 # everything; training runs JOBS jobs at once (auto-sized)
+#   JOBS=10 bash scripts/run_all.sh         # force 10 concurrent training jobs (JOBS=1: one at a time)
 #   DATASETS="ucihar" bash scripts/run_all.sh
 #   STEPS="train evaluate" bash scripts/run_all.sh   # run only some steps
 #
 # Steps: download preprocess smoke train profile stats evaluate
 # Safe to re-run: downloads are skipped if present and every finished training
 # run is skipped (resume from results/tables/raw_results.csv).
-# Logs: results/logs/<step or dataset>.log
+# Logs: results/logs/<step>.log; training: results/logs/train.log (progress)
+# and results/logs/train/<dataset>/<job>.log (one per job).
+#
+# Training (src/run_parallel.py) splits the grid into 161 jobs (dataset x model
+# x variant x split x fold, all seeds). Each job writes its own
+# results/tables/parts/<dataset>/<job>.csv; at the end they are merged into
+# results/tables/raw_results.csv in a fixed order. JOBS=auto picks the number
+# of concurrent jobs from GPU memory, RAM and CPU cores (up to 12 on a GPU).
 #
 # Environment: on first run a virtualenv is created in .venv and
 # requirements.txt is installed into it (re-installed whenever
@@ -20,14 +27,17 @@
 #   BASE_PY=python3.12    interpreter used to create it (default: first working of py -3 / python3 / python)
 #   TORCH_CUDA=cu128      PyTorch CUDA wheel index (https://download.pytorch.org/whl/<TORCH_CUDA>)
 #   NO_VENV=1 PY=python   skip venv management and use this interpreter as-is
-# Windows: run from Git Bash (bash + tee are needed), not PowerShell/cmd.
+# Windows: run from Git Bash (bash + tee are needed), or double-click / run
+# scripts\run_all.bat from cmd/PowerShell, which starts this script in Git Bash.
+# Without Python, Python 3.12 is installed with winget. The PC is kept awake
+# while the pipeline runs.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DATASETS=${DATASETS:-"ucihar wisdm pamap2"}
 STEPS=${STEPS:-"download preprocess smoke train profile stats evaluate"}
-PARALLEL=${PARALLEL:-0}
+JOBS=${JOBS:-auto}
 DEVICE=${DEVICE:-auto}
 VENV=${VENV:-.venv}
 TORCH_CUDA=${TORCH_CUDA:-cu128}
@@ -44,11 +54,16 @@ banner()   { echo; echo "==================== $* ===================="; }
 # ---------------------------------------------------------------------------
 # Python environment
 # ---------------------------------------------------------------------------
+is_windows() { [[ $(uname -s) == MINGW* || $(uname -s) == MSYS* || $(uname -s) == CYGWIN* ]]; }
+
 # a usable interpreter >= 3.10 (skips the Windows Store "python" stub, which
-# exists on PATH but fails when run)
+# exists on PATH but fails when run). 3.12/3.11 are preferred: the newest
+# Python release often has no CUDA PyTorch wheels yet.
 find_base_python() {
   local c
-  for c in ${BASE_PY:-} "py -3" python3 python; do
+  local la=${LOCALAPPDATA:-}; la=${la//\\//}
+  for c in ${BASE_PY:-} "py -3.12" "py -3.11" "py -3" python3 python \
+           "$la/Programs/Python/Launcher/py.exe -3.12" "$la/Programs/Python/Python312/python.exe"; do
     if $c -c "import sys; sys.exit(sys.version_info < (3, 10))" >/dev/null 2>&1; then
       echo "$c"; return 0
     fi
@@ -56,11 +71,24 @@ find_base_python() {
   return 1
 }
 
+# Windows without Python: install 3.12 for the current user with winget
+install_python_windows() {
+  is_windows && command -v winget >/dev/null 2>&1 || return 1
+  echo "no Python >= 3.10 found -> installing Python 3.12 with winget (one time)"
+  winget install --id Python.Python.3.12 -e --scope user --silent \
+      --accept-package-agreements --accept-source-agreements || true
+}
+
 setup_env() {
   banner "0/7 python environment ($VENV)"
+  # a venv left half-made by an interrupted first run is rebuilt
+  if [[ -d $VENV && ! -x $VENV/Scripts/python.exe && ! -x $VENV/bin/python ]]; then
+    echo "$VENV is incomplete -> recreating it"; rm -rf "$VENV"
+  fi
   if [[ ! -d $VENV ]]; then
     local base
-    base=$(find_base_python) || { echo "no Python >= 3.10 found; install one or set BASE_PY=..."; exit 1; }
+    base=$(find_base_python) || { install_python_windows && base=$(find_base_python); } \
+      || { echo "no Python >= 3.10 found; install one from python.org (or set BASE_PY=...) and re-run"; exit 1; }
     echo "creating $VENV with: $base ($($base --version 2>&1))"
     $base -m venv "$VENV"
   fi
@@ -93,6 +121,19 @@ setup_env() {
   fi
 }
 
+# Windows: keep the PC from going to sleep while this script runs (training
+# takes hours; sleep would suspend it). Only a request held by a background
+# PowerShell, released when this script exits -- no power settings change.
+if is_windows && command -v powershell.exe >/dev/null 2>&1; then
+  powershell.exe -NoProfile -NonInteractive -Command '
+    $s = Add-Type -PassThru -Name P -Namespace W -MemberDefinition "[DllImport(\"kernel32.dll\")] public static extern uint SetThreadExecutionState(uint f);"
+    $null = $s::SetThreadExecutionState([uint32]2147483649)
+    while ($true) { Start-Sleep 3600 }' >/dev/null 2>&1 &
+  AWAKE_PID=$!
+  trap 'kill $AWAKE_PID 2>/dev/null || true' EXIT
+  echo "keeping Windows awake until the pipeline finishes"
+fi
+
 if [[ ${NO_VENV:-0} == 1 ]]; then
   PY=${PY:-$(find_base_python)} || { echo "no Python >= 3.10 found; set PY=..."; exit 1; }
 else
@@ -100,16 +141,6 @@ else
   # the pipe runs setup_env in a subshell, so resolve PY again here
   if [[ -x $VENV/Scripts/python.exe ]]; then PY="$VENV/Scripts/python.exe"; else PY="$VENV/bin/python"; fi
 fi
-
-train_dataset() {
-  local ds=$1
-  for m in $MODELS; do
-    local extra=""
-    [[ $m == dual_attention_bigru ]] && extra="--dual_attn_variant all"
-    $PY -m src.train --config "configs/${ds}_config.yaml" --model "$m" --split_mode both \
-        --device "$DEVICE" $extra
-  done
-}
 
 if has_step download; then
   banner "1/7 download raw datasets"
@@ -133,22 +164,9 @@ if has_step smoke; then
 fi
 
 if has_step train; then
-  banner "4/7 train all models x variants x folds x seeds"
-  if [[ $PARALLEL == 1 ]]; then
-    pids=()
-    for ds in $DATASETS; do
-      ( train_dataset "$ds" > "results/logs/train_${ds}.log" 2>&1 ) &
-      pids+=($!)
-      echo "started $ds (pid $!) -> results/logs/train_${ds}.log"
-    done
-    fail=0
-    for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
-    [[ $fail == 0 ]] || { echo "a training job failed -- see results/logs/train_*.log; re-run to resume"; exit 1; }
-  else
-    for ds in $DATASETS; do
-      train_dataset "$ds" 2>&1 | tee "results/logs/train_${ds}.log"
-    done
-  fi
+  banner "4/7 train all models x variants x folds x seeds ($JOBS parallel jobs)"
+  $PY -m src.run_parallel --datasets $DATASETS --models $MODELS --jobs "$JOBS" --device "$DEVICE" \
+      2>&1 | tee results/logs/train.log
 fi
 
 if has_step profile; then
@@ -168,6 +186,8 @@ fi
 
 banner "done"
 echo "results/tables/raw_results.csv       every run (one row per model/variant/dataset/split/fold/seed)"
+echo "results/tables/parts/                per-job results (merged into raw_results.csv)"
+echo "results/logs/train/                  per-job training logs"
 echo "results/tables/master_comparison.md  paper table   (.csv alongside)"
 echo "results/tables/significance.csv      p-values      results/tables/efficiency.csv  latency"
 echo "results/figures/                     plots         results/preds/                 per-run predictions"

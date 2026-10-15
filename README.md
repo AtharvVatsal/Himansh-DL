@@ -58,18 +58,26 @@ That single command does everything:
   `cuda available: True (NVIDIA GeForce ...)`. If a GPU is present but CUDA isn't usable, the script
   stops instead of silently training on the CPU.
 - **Scale.** 7 arms (3 baselines + 4 ablation arms of the proposed model) × 3 seeds × (1 official split + LOSO folds:
-  6 UCI-HAR, 6 WISDM, 8 PAMAP2) gives **483 training runs**. Expect several hours even on a GPU. Keep the laptop
-  plugged in and set it to never sleep.
+  6 UCI-HAR, 6 WISDM, 8 PAMAP2) gives **483 training runs**. Keep the laptop plugged in and set it to never sleep.
+- **Parallel training.** The 483 runs are split into 161 jobs (one per dataset × model × variant × split × fold,
+  each covering all seeds), and `JOBS` of them run at the same time. `JOBS=auto` (the default) sizes this from the
+  hardware: on an NVIDIA GPU up to 12 jobs, limited by CPU cores, GPU memory (~1.5 GB/job) and RAM (~2.5 GB/job).
+  For example, a 3090 with 16 cores and 32 GB RAM runs 11 jobs; with 64 GB it runs 12. On a CPU-only machine it's
+  about 1 job per 4 cores. Each job writes its own `results/tables/parts/<ds>/<job>.csv` and
+  `results/logs/train/<ds>/<job>.log`. When training ends (or on Ctrl-C), all parts are merged into
+  `results/tables/raw_results.csv` in a fixed order (dataset → model → split → fold → variant → seed). Progress and
+  an ETA are shown on screen and saved in `results/logs/train.log`. A failed job is retried once; if it fails again,
+  the others keep going and the script stops with an error after training, listing the failed jobs' logs.
 - **Resume.** If the run is interrupted (crash, reboot, Ctrl-C), run the same command again. Downloads that are
   already present are skipped, and so is every run already recorded in `results/tables/raw_results.csv`
   (keyed on model/variant/dataset/split/fold/seed).
 
-**Options** (environment variables, e.g. `PARALLEL=1 DEVICE=cuda bash scripts/run_all.sh`):
+**Options** (environment variables, e.g. `JOBS=10 DEVICE=cuda bash scripts/run_all.sh`):
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `DEVICE` | `auto` | `cuda`, `cpu`, `mps` or `auto` (CUDA if available, else CPU). Use `cuda` on a GPU machine so a broken install fails loudly |
-| `PARALLEL` | `0` | `1` trains the 3 datasets concurrently on one GPU (faster; logs go to `results/logs/train_<ds>.log`) |
+| `JOBS` | `auto` | number of training jobs run at the same time (`1` = one after another). Lower it if you hit out-of-memory errors |
 | `DATASETS` | `ucihar wisdm pamap2` | subset of datasets |
 | `STEPS` | all | subset of `download preprocess smoke train profile stats evaluate` |
 | `TORCH_CUDA` | `cu128` | PyTorch CUDA wheel index. Try `cu126` if the driver is too old for the default |
@@ -99,7 +107,9 @@ Each step can also be run on its own (inside the venv: `source .venv/bin/activat
 |---|---|---|
 | Download | `python data/download_data.py --dataset all` | `data/raw/` |
 | Preprocess | `python -m src.preprocessing --dataset all` | `data/processed/<ds>/{X,y,subject}.npy`, `meta.json` |
-| Train | `python -m src.train --config configs/<ds>_config.yaml --model <model> [--dual_attn_variant all]` | `results/tables/raw_results.csv`, `results/preds/*.npz`, `checkpoints/` |
+| Train (all, parallel) | `python -m src.run_parallel [--jobs N] [--datasets ...] [--dry_run]` | `results/tables/parts/`, merged into `results/tables/raw_results.csv` |
+| Train (one model) | `python -m src.train --config configs/<ds>_config.yaml --model <model> [--dual_attn_variant all] [--folds K]` | `results/tables/raw_results.csv`, `results/preds/*.npz`, `checkpoints/` |
+| Merge | `python -m src.merge_results` | `results/tables/raw_results.csv` (parts + existing rows, deduplicated, fixed order) |
 | Efficiency | `python -m src.profile_efficiency` | `results/tables/efficiency.csv` (params, FLOPs, CPU/GPU latency) |
 | Significance | `python -m src.stats_test` | `results/tables/significance.csv` |
 | Tables & figures | `python -m src.evaluate` | `results/tables/master_comparison.{csv,md}`, `results/tables/confusion/`, `results/figures/` |

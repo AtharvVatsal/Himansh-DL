@@ -12,7 +12,9 @@ Every run (one seed on one split/fold) appends one row to
 results/tables/raw_results.csv (utils.append_result_row) and writes its test
 predictions to results/preds/<run>.npz. A run whose key (model, variant,
 dataset, split_mode, fold, seed) is already in the CSV is skipped, so an
-interrupted job can simply be re-launched. Latency is NOT measured here
+interrupted job can simply be re-launched. Parallel jobs (src/run_parallel.py)
+each write to their own --results_csv and pass the merged CSV via
+--resume_from, so resume still sees every finished run. Latency is NOT measured here
 (training machines differ) -- see src/profile_efficiency.py.
 
 Early stopping monitors a SUBJECT-WISE validation set carved out of each
@@ -219,7 +221,10 @@ def run(args):
                    grad_clip=args.grad_clip, lr_scheduler=args.lr_scheduler,
                    val_fraction=args.val_fraction, **model_kwargs_from(args))
 
-    done = set() if args.force else completed_run_keys(args.results_csv)
+    done = set()
+    if not args.force:
+        for csv_path in [args.results_csv, *args.resume_from]:
+            done |= completed_run_keys(csv_path)
     flops_cache = {}
     n_run = n_skip = 0
 
@@ -227,6 +232,8 @@ def run(args):
         for fold in iter_folds(args.dataset, split_mode, n_folds=args.n_folds,
                                val_fraction=args.val_fraction):
             fold_id = fold["fold_id"]
+            if split_mode == "loso" and args.folds is not None and fold_id not in args.folds:
+                continue
             input_shape = fold["X_train"].shape[1:]  # (T, C)
             num_classes = len(fold["classes"])
 
@@ -338,6 +345,8 @@ def build_parser():
                    help="ablation arm(s) for dual_attention_bigru ('all' = every arm); ignored by other models")
     p.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     p.add_argument("--n_folds", type=int, default=None, help="override LOSO_N_FOLDS default")
+    p.add_argument("--folds", type=int, nargs="+", default=None,
+                   help="only these LOSO fold ids (default: all); the official split is unaffected")
     p.add_argument("--val_fraction", type=float, default=0.1,
                    help="fraction of each fold's training SUBJECTS held out for early stopping")
     p.add_argument("--epochs", type=int, default=50)
@@ -352,6 +361,8 @@ def build_parser():
     p.add_argument("--low_band_hz", type=float, nargs=2, default=None)
     p.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     p.add_argument("--results_csv", default=str(RAW_RESULTS_CSV))
+    p.add_argument("--resume_from", nargs="*", default=[],
+                   help="extra results CSVs whose finished runs are skipped too (not written to)")
     p.add_argument("--preds_dir", default=str(PREDS_DIR))
     p.add_argument("--checkpoint_dir", default=str(CHECKPOINT_DIR))
     p.add_argument("--no_checkpoints", action="store_true")
